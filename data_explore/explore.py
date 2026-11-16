@@ -47,7 +47,7 @@ print(query_df("""
 
 
 #2: share of rows flagged as suspect (OK = 0) 
-print("\nCheck 2: suspect rows (OK = 0) per category")
+print("\nCheck 2: suspect rows per category")
 print(query_df("""
     select
         category,
@@ -59,4 +59,36 @@ print(query_df("""
     from movement
     group by category
     order by category
+""").to_string(index=False))
+
+
+#  check 3: impossible values and weeks with no sales 
+print("\nCheck 3: impossible values check (OK = 1 only)")
+print(query_df("""
+    select
+        category,
+        cast(countif(price <=0) as bigint) as price_le_0,
+        cast(countif(move < 0) as bigint) as move_lt_0,
+        cast(countif(qty<=0) as bigint) as qty_le_0,
+        -- move = 0 percent
+        round( countif(move = 0) / count(*) * 100, 2)as pct_zero_sales
+    from movement
+    where OK = 1        -- only the rows we'll keep
+    group by category
+    order by category
+""").to_string(index=False))
+
+
+# check 3b: do zero prices match  with zero sales? 
+print("\nCheck 3b: price = 0 while move = 0 (OK = 1 only)")
+print(query_df("""
+    select
+        category,
+        PRICE <= 0 as price_zero,
+        MOVE = 0   as no_sales,
+        count(*)   as rows
+    from movement
+    where OK = 1
+    group by category, price_zero, no_sales
+    order by category, price_zero, no_sales
 """).to_string(index=False))
