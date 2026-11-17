@@ -92,3 +92,56 @@ print(query_df("""
     group by category, price_zero, no_sales
     order by category, price_zero, no_sales
 """).to_string(index=False))
+
+#  check 4: margin check
+print("\nCheck 4: PROFIT (gross margin %) distribution")
+print(query_df("""
+    select
+        category,
+        min(profit) as min_margin,
+        max(profit) as max_margin,
+        round(quantile_cont(PROFIT, 0.05), 1) as p05,
+        round(quantile_cont(PROFIT, 0.5), 1) as median,
+        round(quantile_cont(PROFIT, .95), 1)as p95,
+        round(100 * countif(profit < 0)/count(*),2) as pct_negative,
+        cast(countif(profit> 100) as bigint) as rows_over_100
+    from movement
+    where OK = 1 and MOVE > 0
+    group by category
+    order by category
+""").to_string(index=False))
+
+
+#  check 4b: # sales  in unusual margins
+print("\nCheck 4b: sales with unusal margins -50% or > 80%)")
+print(query_df("""
+    select
+        category,
+        round(countif(PROFIT < -50 or PROFIT > 80) / count(*) * 100, 2) as pct_rows_extreme,
+        round(sum(case when PROFIT < -50 or PROFIT > 80
+                             then PRICE * MOVE / QTY else 0 end)
+                  / sum(PRICE * MOVE / QTY) *100, 2) as pct_sales_extreme
+    from movement
+    where OK = 1 and MOVE > 0
+    group by category
+    order by category
+""").to_string(index=False))
+
+#  check 4c: are extreme margins because of promotions
+print("\nCheck 4c: low vs high extreme margins promotions check")
+print(query_df("""
+    select
+        category,
+        case
+            when PROFIT < -50 then 'below -50%'
+            when PROFIT > 80  then 'above 80%'
+            else 'normal'
+        end as margin_group,
+        count(*) as rows,
+        round(avg(MOVE), 1) as avg_units,
+        round(100 * countif(SALE is not null) / count(*), 1) as pct_promo_flag
+    from movement
+    where OK = 1 and MOVE > 0
+    group by category, margin_group
+    order by category, margin_group
+""").to_string(index=False))
