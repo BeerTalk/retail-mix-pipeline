@@ -3,13 +3,16 @@
 DuckDB reads the CSVs directly, so the 1.2 GB soft drinks file never has to fit in memory.
 """
 import duckdb
+import sys
+
 
 RAW = "data/raw"
-con = duckdb.connect()
+# con = duckdb.connect()
+con = duckdb.connect("data/retail.duckdb")
 
 # one view over all three movement files, with a category col from the file name
 con.execute(f"""
-    create view movement as
+    create table if not exists movement as
     select
         case
             when filename like '%wber%' then 'beer'
@@ -22,14 +25,19 @@ con.execute(f"""
 """)
 
 
+ONLY = sys.argv[1:]
+def run(check_id):
+    return not ONLY or check_id in ONLY
+
 def query_df(sql: str):
     """Run a SQL query and return the result as a pandas DataFrame."""
     return con.execute(sql).df()
 
 
 # check 1: size and time per category
-print("\nCheck 1: rows, stores, products and weeks per category")
-print(query_df("""
+if run("1"):
+    print("\nCheck 1: rows, stores, products and weeks per category")
+    print(query_df("""
     select
         category,
         count(*) as rows,
@@ -47,8 +55,9 @@ print(query_df("""
 
 
 #2: share of rows flagged as suspect (OK = 0) 
-print("\nCheck 2: suspect rows per category")
-print(query_df("""
+if run("2"):
+    print("\nCheck 2: suspect rows per category")
+    print(query_df("""
     select
         category,
         count(*)                                   as rows,
@@ -63,8 +72,9 @@ print(query_df("""
 
 
 #  check 3: impossible values and weeks with no sales 
-print("\nCheck 3: impossible values check (OK = 1 only)")
-print(query_df("""
+if run("3"):
+    print("\nCheck 3: impossible values check (OK = 1 only)")
+    print(query_df("""
     select
         category,
         cast(countif(price <=0) as bigint) as price_le_0,
@@ -80,8 +90,9 @@ print(query_df("""
 
 
 # check 3b: do zero prices match  with zero sales? 
-print("\nCheck 3b: price = 0 while move = 0 (OK = 1 only)")
-print(query_df("""
+if run("3b"):
+    print("\nCheck 3b: price = 0 while move = 0 (OK = 1 only)")
+    print(query_df("""
     select
         category,
         PRICE <= 0 as price_zero,
@@ -94,8 +105,9 @@ print(query_df("""
 """).to_string(index=False))
 
 #  check 4: margin check
-print("\nCheck 4: PROFIT (gross margin %) distribution")
-print(query_df("""
+if run("4"):
+    print("\nCheck 4: PROFIT (gross margin %) distribution")
+    print(query_df("""
     select
         category,
         min(profit) as min_margin,
@@ -113,8 +125,9 @@ print(query_df("""
 
 
 #  check 4b: # sales  in unusual margins
-print("\nCheck 4b: sales with unusal margins -50% or > 80%)")
-print(query_df("""
+if run("4b"):
+    print("\nCheck 4b: sales with unusal margins -50% or > 80%)")
+    print(query_df("""
     select
         category,
         round(countif(PROFIT < -50 or PROFIT > 80) / count(*) * 100, 2) as pct_rows_extreme,
@@ -128,8 +141,9 @@ print(query_df("""
 """).to_string(index=False))
 
 #  check 4c: are extreme margins because of promotions
-print("\nCheck 4c: low vs high extreme margins promotions check")
-print(query_df("""
+if run("4c"):
+    print("\nCheck 4c: low vs high extreme margins promotions check")
+    print(query_df("""
     select
         category,
         case
@@ -144,4 +158,80 @@ print(query_df("""
     where OK = 1 and MOVE > 0
     group by category, margin_group
     order by category, margin_group
+""").to_string(index=False))
+
+#  check 5: sales and gross profit by category and year
+if run("5"):
+    print("\nCheck 5: sales, profit and margin by category and year")
+    print(query_df("""
+    with sales_rows as (
+        select
+            category,
+            year(DATE '1989-09-14' + INTERVAL ((WEEK - 1) * 7) DAY) as yr,
+            PRICE * MOVE / QTY  as sales,
+            PROFIT
+        from movement
+        where OK = 1 and MOVE > 0
+    )
+    select
+        category,
+        yr,
+        round(sum(sales) / 1000, 0) as sales_k,
+        round(sum(sales * profit /100 )/ 1000, 0) as gross_profit_k,
+        round(100* sum(sales * profit/100) / sum(sales), 1) as margin_pct
+    from sales_rows
+    group by category, yr
+    order by category, yr
+""").to_string(index=False))
+
+#  check 6: assortment breadth (products with sales per store per week)
+if run("6"):
+    print("\nCheck 6: products sold per store per week")
+    print(query_df("""
+    with store_weeks as (
+        select
+            category,
+            STORE,
+            WEEK,
+            count(distinct UPC) as n_products
+        from movement
+        where OK = 1 and MOVE > 0
+        group by category, STORE, WEEK
+    )
+    select
+        category,
+        count(*) as store_weeks,
+        round(avg(n_products), 0) as avg_products,
+        round( quantile_cont(n_products, 0.1), 1) as p10,
+        round( quantile_cont(n_products, 0.5), 1) as median,
+        round( quantile_cont(n_products, 0.9), 1) as p90,
+        max(n_products) as max_products
+    from store_weeks
+    group by category
+    order by category
+""").to_string(index=False))
+
+#  check 7: store reporting per week
+if run("7"):
+    print("\nCheck 7: stores reporting each week")
+    print(query_df("""
+    with week_stores as (
+        select
+            category,
+            WEEK,
+            count(distinct STORE) as n_stores
+        from movement
+        where OK = 1 and MOVE > 0
+        group by category, week
+    )
+    select
+        category,
+        count(*) as weeks,
+        min(n_stores) as min_stores,
+        round(quantile_cont(n_stores, 0.5), 0) as median_stores,
+        max(n_stores) as max_stores,
+        cast(countif(n_stores < 70 ) as bigint) as weeks_under_70
+    from week_stores
+    group by category
+    order by category
 """).to_string(index=False))
