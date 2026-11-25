@@ -235,3 +235,52 @@ if run("7"):
     group by category
     order by category
 """).to_string(index=False))
+
+
+#  check 8: upc matching check
+if run("8"):
+    print("\nCheck 8: if products in sales are in the product file")
+    print(query_df(f"""
+    with upc as (
+        select distinct UPC
+        from read_csv(['{RAW}/upcber.csv', '{RAW}/upccer.csv', '{RAW}/upcsdr.csv'],
+                      union_by_name = true, header = true, encoding = 'latin-1')
+    ),
+
+    sold as (
+        select
+            category,
+            UPC,
+            sum(PRICE * MOVE / QTY) as sales
+        from movement
+        where OK = 1 and MOVE > 0
+        group by category, UPC
+    )
+    select
+        s.category,
+        count(*) as products_sold,
+       cast(countif(u.upc is not null) as bigint) as products_matched,
+       round(100* sum(case when u.UPC is not null then s.sales else 0 end)/sum(s.sales),2) as pct_sales_matched
+    from sold as s
+    left join upc as u
+        on s.UPC = u.UPC
+    group by s.category
+    order by s.category
+""").to_string(index=False))
+
+#  check 9: promo check
+if run("9"):
+    print("\nCheck 9: promotion ")
+    print(query_df("""
+    select
+        category,
+        case when SALE is null then 'none' else SALE end as sale_code,
+        count(*)                                        as rows,
+        round(100 * count(*) / sum(count(*)) over (partition by category), 1)
+                                                        as pct_rows,
+        round(avg(MOVE), 1)                             as avg_units
+    from movement
+    where OK = 1 and MOVE > 0
+    group by category, sale_code
+    order by category, sale_code
+""").to_string(index=False))
